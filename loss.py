@@ -11,12 +11,12 @@ def nt_xent_loss(z, B, views, temperature):
 
     z = F.normalize(z, dim=1)
     similarity_matrix = torch.matmul(z, z.T)
-
+    print(similarity_matrix.shape)
     # remove diag
     mask = torch.eye(labels.shape[0], dtype=torch.bool).to(args.device)
     labels = labels[~mask].view(labels.shape[0], -1)
     similarity_matrix = similarity_matrix[~mask].view(similarity_matrix.shape[0], -1)
-
+    print(similarity_matrix.shape)
     # select pos example and neg example
     pos = similarity_matrix[labels.bool()].view(labels.shape[0], -1)
     neg = similarity_matrix[~labels.bool()].view(similarity_matrix.shape[0], -1)

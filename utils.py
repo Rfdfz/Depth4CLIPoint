@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from torch import nn
 from torch_scatter import scatter
+from torchvision.transforms import RandomRotation, RandomResizedCrop, RandomHorizontalFlip, RandomApply, Compose, \
+    GaussianBlur, CenterCrop
 
 TRANS = -1.5
 
@@ -236,6 +238,20 @@ class Realistic_Projection:
         return points
 
 
+class Transformations(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.base_transform = torch.nn.Sequential(
+            RandomRotation((0, 180), fill=1.0),
+            RandomResizedCrop(32, scale=(0.8, 1.0)),
+            RandomHorizontalFlip(p=0.5),
+            RandomApply([GaussianBlur(kernel_size=3, sigma=(1.0, 2.0))], p=0.5)
+        )
+
+    def forward(self, x):
+        return self.base_transform(x)
+
+
 def accuracy(output, target, topk=(1,)):
     with torch.no_grad():
         maxk = max(topk)
@@ -250,3 +266,38 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+
+def point_cloud_normalize(point_cloud):
+    """
+    :param point_cloud: point cloud data
+    :return: normalized point cloud data
+    """
+    centroid = np.mean(point_cloud, axis=0)
+    point_cloud -= centroid
+    m = np.max(np.sqrt(np.sum(point_cloud ** 2, axis=1)))
+    return point_cloud / m
+
+
+def farthest_point_sample(point, npoint):
+    """
+    Input:
+        xyz: pointcloud data, [N, D]
+        npoint: number of samples
+    Return:
+        centroids: sampled pointcloud index, [npoint, D]
+    """
+    N, D = point.shape
+    xyz = point[:, :3]
+    centroids = np.zeros((npoint,))
+    distance = np.ones((N,)) * 1e10
+    farthest = np.random.randint(0, N)
+    for i in range(npoint):
+        centroids[i] = farthest
+        centroid = xyz[farthest, :]
+        dist = np.sum((xyz - centroid) ** 2, -1)
+        mask = dist < distance
+        distance[mask] = dist[mask]
+        farthest = np.argmax(distance, -1)
+    point = point[centroids.astype(np.int32)]
+    return point
