@@ -5,6 +5,7 @@ from clip import clip
 from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from loss import *
+import time
 import os
 
 
@@ -144,10 +145,12 @@ class Depth4CLIPoint:
         transfrom = Transformations()
 
         if is_continue is True and os.path.exists(r'checkpoints/checkpoint_dep.pth'):
-            checkpoint = torch.load(r'checkpoints/checkpoint_dep.pth')['model'].to(args.device)
-            self.depth_contrastive_encoder = checkpoint['model']
+            checkpoint = torch.load(r'checkpoints/checkpoint_dep.pth')
+            self.depth_contrastive_encoder.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            scaler.load_state_dict(checkpoint['scaler'])
+            scheduler.load_state_dict(checkpoint['scheduler'])
             start_epochs = checkpoint['epoch']
-            optimizer = checkpoint['optimizer']
         else:
             start_epochs = 0
 
@@ -159,6 +162,7 @@ class Depth4CLIPoint:
         print("====================================================================================")
         print('Training Depth Contrastive Encoder')
         for epoch in range(start_epochs, args.epochs_dep):
+            start_time = time.time()
             for pc, y in dataloader:
                 pc = pc.to(args.device)
                 imgs = self.project(pc)  # shape(batch_size * views, channels, height, weight)
@@ -180,8 +184,9 @@ class Depth4CLIPoint:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+            end_time = time.time()
             # if epoch % 10 == 0:
-            print(f'The {epoch + 1}-th epochs loss = {loss}')
+            print(f'The {epoch + 1}-th epochs: loss = {loss}, time = {end_time-start_time}')
             # warm-up
             if epoch >= 10:
                 scheduler.step()
@@ -189,6 +194,8 @@ class Depth4CLIPoint:
             checkpoint = {
                 'model': self.depth_contrastive_encoder.state_dict(),
                 'optimizer': optimizer.state_dict(),
+                'scaler': scaler.state_dict(),
+                'scheduler': scheduler.state_dict(),
                 'epoch': epoch + 1
             }
             torch.save(checkpoint, r"checkpoints/checkpoint_dep.pth")
