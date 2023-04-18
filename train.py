@@ -1,6 +1,7 @@
 from ModelNet import ModelNetDataset
 from model import *
 from torch.utils.data.dataloader import DataLoader
+import warnings
 
 if __name__ == '__main__':
 
@@ -10,7 +11,7 @@ if __name__ == '__main__':
 
     # train depth contrastive encoder
     model = DepthPointCLIP(classnames)
-    model.train_depth_contrastive_encoder(dataloader, is_continue=False)
+    model.train_depth_contrastive_encoder(dataloader, is_continue=True)
 
     # train muti views contrastive encoder
 

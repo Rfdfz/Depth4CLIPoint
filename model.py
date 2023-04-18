@@ -2,10 +2,11 @@ import random
 import torch
 from torch.backends import cudnn
 from torchvision.transforms import ToPILImage
+from torchvision import models
+import timm
 from utils import Realistic_Projection, accuracy, Transformations
 from clip import clip
 from torch import nn
-import timm
 from torch.cuda.amp import GradScaler, autocast
 from loss import *
 
@@ -42,25 +43,35 @@ class Text_Encoder(nn.Module):
 
 class Depth_Contrastive_Encoder(nn.Module):
     def __init__(self):
-        super(Depth_Contrastive_Encoder, self).__init__()
-        self.image_encoder = timm.create_model(args.depth_encoder_backbone_name, pretrained=False)
-        self.projector = nn.Sequential(
-            nn.Linear(in_features=1000, out_features=512, bias=False),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_features=512, out_features=512, bias=True)
-        )
+        super().__init__()
+        self.encoder = models.get_model(name=args.depth_encoder_backbone_name, num_classes=2048, zero_init_residual=True)
+        # self.based_encoder = timm.create_model(args.depth_encoder_backbone_name, pretrained=False)
+        # self.encoder = self.based_encoder(2048, zero_init_residual=True)
+        prev_dim = self.encoder.fc.weight.shape[1]
+        self.encoder.fc = nn.Sequential(nn.Linear(prev_dim, prev_dim, bias=False),
+                                        nn.BatchNorm1d(prev_dim),
+                                        nn.ReLU(inplace=True),  # first layer
+                                        nn.Linear(prev_dim, prev_dim, bias=False),
+                                        nn.BatchNorm1d(prev_dim),
+                                        nn.ReLU(inplace=True),  # second layer
+                                        self.encoder.fc,
+                                        nn.BatchNorm1d(2048, affine=False))  # output layer
+        self.encoder.fc[6].bias.requires_grad = False  # hack: not use bias as it is followed by BN
+        self.predictor = nn.Sequential(nn.Linear(2048, 512, bias=False),
+                                       nn.BatchNorm1d(512),
+                                       nn.ReLU(inplace=True),  # hidden layer
+                                       nn.Linear(512, 2048))  # output layer
 
-    def forward(self, x):
-        x = self.image_encoder(x)
-        x = self.projector(x)
-        return x
+    def forward(self, x1, x2):
+        z1, z2 = self.encoder(x1), self.encoder(x2)
+        p1, p2 = self.predictor(z1), self.predictor(z2)
+        return p1, p2, z1.detach(), z2.detach()
 
 
 class Multi_Views_Contrastive_Encoder(nn.Module):
     def __init__(self):
         super(Multi_Views_Contrastive_Encoder, self).__init__()
-        self.image_encoder = timm.create_model(args.multi_views_encoder_backbone_name, pretrained=False)
+        self.encoder = models.__dict__[args.multi_views_encoder_backbone_name](2048, zero_init_residual=True)
         self.projector = nn.Sequential(
             nn.Linear(in_features=1000, out_features=512, bias=False),
             nn.BatchNorm1d(512),
@@ -72,6 +83,7 @@ class Multi_Views_Contrastive_Encoder(nn.Module):
         x = self.image_encoder(x)
         x = self.projector(x)
         return x
+
 
 
 class Filiter(nn.Module):
@@ -99,9 +111,6 @@ class DepthPointCLIP:
         # Realistic_Projection from PointCLIP V2
         self.projection = Realistic_Projection()
 
-
-        self.dtype = torch.float16
-
         # Depth_Contrastive_Encoder
         self.depth_contrastive_encoder = Depth_Contrastive_Encoder()
         self.depth_contrastive_encoder.dtype = self.dtype
@@ -121,8 +130,10 @@ class DepthPointCLIP:
         return img
 
     def train_depth_contrastive_encoder(self, dataloader, is_continue=False):
+
         if is_continue is True:
             self.depth_contrastive_encoder = torch.load('depth.pt').to(args.device)
+
         cudnn.benchmark = True
         self.depth_contrastive_encoder.to(args.device)
         self.depth_contrastive_encoder.train()
@@ -133,13 +144,13 @@ class DepthPointCLIP:
         # optimzier
         # optimizer = torch.optim.Adam(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep,
         #                              weight_decay=args.weight_decay_dep)
-        optimizer = torch.optim.SGD(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep)
+        optimizer = torch.optim.SGD(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep, weight_decay=args.weight_decay_dep, momentum=args.momentum)
 
         # scheduler
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(dataloader), eta_min=0,
                                                                last_epoch=-1)
         # Cross_Entropy
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = torch.nn.CosineSimilarity(dim=1).to(args.device)
 
         # transform
         transfrom = Transformations()
@@ -159,14 +170,13 @@ class DepthPointCLIP:
                 # shape(batch_size * views * HW/patch_size^2, c, patch_size, patch_size)
 
                 # transform
-                imgs1 = transfrom(imgs)
+                imgs1, imgs2 = transfrom(imgs), transfrom(imgs)
+                del imgs
 
                 # train
                 with autocast():
-                    z = self.depth_contrastive_encoder(imgs)
-                    logits, labels = nt_xent_loss(z, z.shape[0]/2, 2, args.temperature_dep)
-                    loss = criterion(logits, labels)
-                    print(loss)
+                    p1, p2, z1, z2 = self.depth_contrastive_encoder(imgs1, imgs2)
+                    loss = -(criterion(p1, z2).mean() + criterion(p2, z1).mean()) * 0.5
                 optimizer.zero_grad()
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -174,9 +184,7 @@ class DepthPointCLIP:
                 # save model
                 torch.save(self.depth_contrastive_encoder, 'depth.pt')
 
-            acc = accuracy(logits, labels, (1, 5))
-            print(f'The {epoch+1}-th epochs, loss = {loss}, acc = {acc}')
-
+            print(f'The {epoch+1}-th epochs loss = {loss}')
             # warm-up
             if epoch >= 10:
                 scheduler.step()

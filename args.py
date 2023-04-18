@@ -14,10 +14,11 @@ TEMPLATES = "A depth map of {} point cloud."
 
 # args of depth_contrastive_encoder
 depth_encoder_backbone_name = 'resnet50'        # ['resnet50', 'resnet101']
-epochs_dep = 200
+epochs_dep = 100
 temperature_dep = 0.07
-lr_dep = 0.0003
-weight_decay_dep = 0
+lr_dep = 0.01
+weight_decay_dep = 0.0001
+momentum = 0.9
 # patch_size 16, 32
 patch_size = 32
 
