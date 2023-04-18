@@ -42,10 +42,10 @@ class Text_Encoder(nn.Module):
 class Depth_Contrastive_Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.encoder = models.get_model(name=args.depth_encoder_backbone_name, num_classes=2048,
+
+        self.encoder = models.get_model(name=args.depth_encoder_backbone_name, num_classes=512,
                                         zero_init_residual=True)
-        # self.based_encoder = timm.create_model(args.depth_encoder_backbone_name, pretrained=False)
-        # self.encoder = self.based_encoder(2048, zero_init_residual=True)
+
         prev_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = nn.Sequential(nn.Linear(prev_dim, prev_dim, bias=False),
                                         nn.BatchNorm1d(prev_dim),
@@ -54,12 +54,13 @@ class Depth_Contrastive_Encoder(nn.Module):
                                         nn.BatchNorm1d(prev_dim),
                                         nn.ReLU(inplace=True),  # second layer
                                         self.encoder.fc,
-                                        nn.BatchNorm1d(2048, affine=False))  # output layer
+                                        nn.BatchNorm1d(512, affine=False))  # output layer
+
         self.encoder.fc[6].bias.requires_grad = False  # hack: not use bias as it is followed by BN
-        self.predictor = nn.Sequential(nn.Linear(2048, 512, bias=False),
+        self.predictor = nn.Sequential(nn.Linear(512, 512, bias=False),
                                        nn.BatchNorm1d(512),
                                        nn.ReLU(inplace=True),  # hidden layer
-                                       nn.Linear(512, 2048))  # output layer
+                                       nn.Linear(512, 512))  # output layer
 
     def forward(self, x1, x2):
         z1, z2 = self.encoder(x1), self.encoder(x2)
@@ -90,15 +91,20 @@ class Filiter(nn.Module):
 
 
 class Depth4CLIPoint:
-    def __init__(self, classname):
-        # # Loading CLIP
-        print("====================================================================================")
-        print(f"Loading {args.clip_backbone_name} CLIP")
-        self.clip = load_clip_to_cpu(clip_backbone_name=args.clip_backbone_name)
-        self.clip.to(args.device)
-        self.dtype = self.clip.dtype
-        print(f"Loading {args.clip_backbone_name} CLIP Successfully")
-        print("====================================================================================")
+    def __init__(self, mode, classname):
+        if mode not in ['train', 'test']:
+            raise RuntimeError("Please input 'train' or 'eval'")
+        if mode == 'test':
+            # # Loading CLIP
+            print("====================================================================================")
+            print(f"Loading {args.clip_backbone_name} CLIP")
+            self.clip = load_clip_to_cpu(clip_backbone_name=args.clip_backbone_name)
+            self.clip.to(args.device)
+            self.dtype = self.clip.dtype
+            print(f"Loading {args.clip_backbone_name} CLIP Successfully")
+            print("====================================================================================")
+        else:
+            self.dtype = torch.float16
 
         #  Text Encoder from CLIP
         self.text_encoder = Text_Encoder(clip=self.clip, classname=classname)
@@ -163,7 +169,7 @@ class Depth4CLIPoint:
         print('Training Depth Contrastive Encoder')
         for epoch in range(start_epochs, args.epochs_dep):
             start_time = time.time()
-            for pc, y in dataloader:
+            for pc, _ in dataloader:
                 pc = pc.to(args.device)
                 imgs = self.project(pc)  # shape(batch_size * views, channels, height, weight)
                 imgs = F.unfold(imgs, kernel_size=args.patch_size, stride=args.patch_size)
