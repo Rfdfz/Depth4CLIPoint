@@ -4,7 +4,7 @@ device = 'cuda'
 # datasets configs
 # datasets name: [ModelNet40, ModelNet10]
 datasets_name = 'ModelNet40'
-num_workers = 2
+num_workers = 4
 
 # clip backbone name: ['RN50', 'RN101', 'ViT-B/16', 'ViT-B/32']
 clip_backbone_name = 'ViT-B/16'

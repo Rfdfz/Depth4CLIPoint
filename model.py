@@ -1,14 +1,11 @@
-import random
-import torch
 from torch.backends import cudnn
-from torchvision.transforms import ToPILImage
 from torchvision import models
-import timm
-from utils import Realistic_Projection, accuracy, Transformations
+from utils import Realistic_Projection, Transformations
 from clip import clip
 from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from loss import *
+import os
 
 
 def load_clip_to_cpu(clip_backbone_name):
@@ -44,7 +41,8 @@ class Text_Encoder(nn.Module):
 class Depth_Contrastive_Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.encoder = models.get_model(name=args.depth_encoder_backbone_name, num_classes=2048, zero_init_residual=True)
+        self.encoder = models.get_model(name=args.depth_encoder_backbone_name, num_classes=2048,
+                                        zero_init_residual=True)
         # self.based_encoder = timm.create_model(args.depth_encoder_backbone_name, pretrained=False)
         # self.encoder = self.based_encoder(2048, zero_init_residual=True)
         prev_dim = self.encoder.fc.weight.shape[1]
@@ -85,13 +83,12 @@ class Multi_Views_Contrastive_Encoder(nn.Module):
         return x
 
 
-
 class Filiter(nn.Module):
     def __init__(self):
         super(Filiter, self).__init__()
 
 
-class DepthPointCLIP:
+class Depth4CLIPoint:
     def __init__(self, classname):
         # # Loading CLIP
         print("====================================================================================")
@@ -130,21 +127,12 @@ class DepthPointCLIP:
         return img
 
     def train_depth_contrastive_encoder(self, dataloader, is_continue=False):
-
-        if is_continue is True:
-            self.depth_contrastive_encoder = torch.load('depth.pt').to(args.device)
-
-        cudnn.benchmark = True
-        self.depth_contrastive_encoder.to(args.device)
-        self.depth_contrastive_encoder.train()
-
         # scaler
         scaler = GradScaler()
 
         # optimzier
-        # optimizer = torch.optim.Adam(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep,
-        #                              weight_decay=args.weight_decay_dep)
-        optimizer = torch.optim.SGD(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep, weight_decay=args.weight_decay_dep, momentum=args.momentum)
+        optimizer = torch.optim.SGD(self.depth_contrastive_encoder.parameters(), lr=args.lr_dep,
+                                    weight_decay=args.weight_decay_dep, momentum=args.momentum)
 
         # scheduler
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(dataloader), eta_min=0,
@@ -155,11 +143,22 @@ class DepthPointCLIP:
         # transform
         transfrom = Transformations()
 
+        if is_continue is True and os.path.exists(r'checkpoints/checkpoint_dep.pth'):
+            checkpoint = torch.load(r'checkpoints/checkpoint_dep.pth')['model'].to(args.device)
+            self.depth_contrastive_encoder = checkpoint['model']
+            start_epochs = checkpoint['epoch']
+            optimizer = checkpoint['optimizer']
+        else:
+            start_epochs = 0
+
+        cudnn.benchmark = True
+        self.depth_contrastive_encoder.to(args.device)
+        self.depth_contrastive_encoder.train()
+
         # depth_contrastive_encoder
         print("====================================================================================")
         print('Training Depth Contrastive Encoder')
-
-        for epoch in range(args.epochs_dep):
+        for epoch in range(start_epochs, args.epochs_dep):
             for pc, y in dataloader:
                 pc = pc.to(args.device)
                 imgs = self.project(pc)  # shape(batch_size * views, channels, height, weight)
@@ -181,20 +180,26 @@ class DepthPointCLIP:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-                # save model
-                torch.save(self.depth_contrastive_encoder, 'depth.pt')
-
-            print(f'The {epoch+1}-th epochs loss = {loss}')
+            # if epoch % 10 == 0:
+            print(f'The {epoch + 1}-th epochs loss = {loss}')
             # warm-up
             if epoch >= 10:
                 scheduler.step()
+            # save model
+            checkpoint = {
+                'model': self.depth_contrastive_encoder.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'epoch': epoch + 1
+            }
+            torch.save(checkpoint, r"checkpoints/checkpoint_dep.pth")
 
         print('Train Depth Contrastive Encoder successfully')
         print("====================================================================================")
 
     def train_multi_views_contrasitive_encoder(self, dataloader, is_continue=False):
+
         if is_continue is True:
-            self.multi_views_contrasitive_encoder = torch.load('depth.pt').to(args.device)
+            self.multi_views_contrasitive_encoder = torch.load('mv.pt').to(args.device)
 
         self.multi_views_contrasitive_encoder.to(args.device)
         self.multi_views_contrasitive_encoder.train()
